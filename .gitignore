@@ -6,3 +6,4 @@ data/
 *.txt.gz
 *.txt.tmp
 *.swp
+*.bb

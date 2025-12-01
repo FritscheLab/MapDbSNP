@@ -16,6 +16,7 @@ option_list <- list(
   make_option("--ID", type = "character", default = "ID", help = "column name with SNP ID"),
   make_option("--build", type = "character", default = "hg19", help = "Genome Build, hg19 or hg38"),
   make_option("--dbsnp-version", type = "character", default = "155", help = "dbSNP release to use (151 or 155)"),
+  make_option("--bb-file", type = "character", default = "", help = "Path to dbSNP BigBed file (dbSnp155.bb). Overrides text-based lookup when provided."),
   make_option("--data-dir", type = "character", default = "", help = "Directory for reference data (default: ./data)"),
   make_option("--outdir", type = "character", default = "", help = "Output directory"),
   make_option("--prefix", type = "character", default = "", help = "Prefix for output file name without path"),
@@ -40,8 +41,29 @@ data_dir <- if (nzchar(opt$data_dir)) opt$data_dir else here::here("data")
 if (!build %in% SUPPORTED_BUILDS) stop(sprintf("Unsupported build '%s'", build))
 if (!version %in% SUPPORTED_DBSNP_VERSIONS) stop(sprintf("Unsupported dbSNP version '%s'", version))
 
+ensure_dir(data_dir)
+
+find_bigbed_tool <- function() {
+  candidate <- here::here("script", "bigBedNamedItems")
+  if (file.exists(candidate) && file.access(candidate, 1) == 0) return(candidate)
+  sys <- Sys.which("bigBedNamedItems")
+  if (nzchar(sys)) return(sys)
+  stop("bigBedNamedItems not found. Download it from UCSC (see README) or place it in ./script/.")
+}
+
+bb_file <- opt$bb_file
+if (!nzchar(bb_file)) {
+  default_bb <- file.path(data_dir, sprintf("dbSnp%s.bb", version))
+  if (file.exists(default_bb)) bb_file <- default_bb
+}
+if (nzchar(bb_file) && !file.exists(bb_file)) {
+  stop(sprintf("BigBed file not found: %s", bb_file))
+}
+
 if (isTRUE(opt$prepare_only)) {
-  ensure_reference_data(build, version, data_dir, cpus = cpus)
+  if (!nzchar(bb_file)) {
+    ensure_reference_data(build, version, data_dir, cpus = cpus)
+  }
   ensure_rsmerge(data_dir)
   message("Reference data prepared. Exiting because --prepare-only was set.")
   quit(save = "no")
@@ -55,7 +77,7 @@ if (!nzchar(prefix)) prefix <- tools::file_path_sans_ext(basename(input))
 
 setDTthreads(cpus)
 
-reference <- ensure_reference_data(build, version, data_dir, cpus = cpus)
+reference <- if (!nzchar(bb_file)) ensure_reference_data(build, version, data_dir, cpus = cpus) else NULL
 RsMerge <- ensure_rsmerge(data_dir)
 
 if (opt$skip > 0) {
@@ -80,33 +102,54 @@ awk_merge <- paste(
 )
 updated1 <- fread(cmd = awk_merge, sep = "\t", header = TRUE, showProgress = FALSE)
 
-temp1 <- tempfile(fileext = ".txt")
+work_dir <- tempfile(pattern = "mapdbsnp_", tmpdir = tempdir())
+ensure_dir(work_dir)
+on.exit(unlink(work_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+temp1 <- tempfile(fileext = ".txt", tmpdir = work_dir)
 snpids <- as.character(updated1[[ID]])
 snpids <- snpids[grep("^rs", snpids)]
 writeLines(snpids, temp1)
 
-# part 2: extract positions from dbSNP
-message(sprintf("Extracting positions from dbSNP%s (%s)", version, build))
-dbsnp <- reference$split_files
-outfiles <- file.path(tempdir(), paste0(basename(dbsnp), "_", seq_along(dbsnp), ".txt"))
-awk_extract <- paste("awk -f", shQuote(here::here("script", "Extract_SNPs_dbSNP_awk.txt")))
-cmdLines <- sprintf(
-  "%s %s %s > %s",
-  awk_extract,
-  shQuote(temp1),
-  shQuote(dbsnp),
-  shQuote(outfiles)
-)
+snppos <- data.table::data.table(CHROM = character(), POS0 = integer(), POS = integer(), ID = character())
 
-runParallel(cmdLines, min(cpus, 64))
-
-message("Process and combine input / output")
-outfiles <- outfiles[file.exists(outfiles) & file.info(outfiles)$size > 0]
-
-if (length(outfiles) > 0) {
-  snppos <- rbindlist(lapply(outfiles, fread, header = FALSE, col.names = c("CHROM", "POS0", "POS", ID)))
+if (nzchar(bb_file)) {
+  message(sprintf("Extracting positions from BigBed: %s", bb_file))
+  bb_tool <- find_bigbed_tool()
+  bb_out <- file.path(work_dir, "dbsnp_bb_hits.bed")
+  cmd_bb <- sprintf("%s -nameFile %s %s %s",
+                    shQuote(bb_tool),
+                    shQuote(bb_file),
+                    shQuote(temp1),
+                    shQuote(bb_out))
+  status <- system(cmd_bb)
+  if (!identical(status, 0L)) stop("bigBedNamedItems failed. Ensure the binary is installed and executable.")
+  if (file.exists(bb_out) && file.info(bb_out)$size > 0) {
+    snppos <- fread(bb_out, select = 1:4, header = FALSE, col.names = c("CHROM", "POS0", "POS", ID))
+    snppos[, CHROM := gsub("^chr", "", CHROM)]
+  }
 } else {
-  snppos <- data.table::data.table(CHROM = character(), POS0 = integer(), POS = integer(), ID = character())
+  # part 2: extract positions from dbSNP text files
+  message(sprintf("Extracting positions from dbSNP%s (%s)", version, build))
+  dbsnp <- reference$split_files
+  outfiles <- file.path(work_dir, paste0(basename(dbsnp), "_", seq_along(dbsnp), ".txt"))
+  awk_extract <- paste("awk -f", shQuote(here::here("script", "Extract_SNPs_dbSNP_awk.txt")))
+  cmdLines <- sprintf(
+    "%s %s %s > %s",
+    awk_extract,
+    shQuote(temp1),
+    shQuote(dbsnp),
+    shQuote(outfiles)
+  )
+
+  runParallel(cmdLines, min(cpus, 64))
+
+  message("Process and combine input / output")
+  outfiles <- outfiles[file.exists(outfiles) & file.info(outfiles)$size > 0]
+
+  if (length(outfiles) > 0) {
+    snppos <- rbindlist(lapply(outfiles, fread, header = FALSE, col.names = c("CHROM", "POS0", "POS", ID)))
+  }
 }
 
 # zero based start positions
