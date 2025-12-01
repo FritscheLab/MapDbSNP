@@ -30,6 +30,11 @@ Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk
 wget http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -O ./script/bigBedNamedItems
 chmod +x ./script/bigBedNamedItems
 ```
+If `wget` is not available, use `curl`:
+```bash
+curl -L http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems
+chmod +x ./script/bigBedNamedItems
+```
 
 2) Download the dbSNP BigBed for your build (defaults to `./data/dbSnp<version>_<build>.bb`):
 - hg38 (default): `http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb` (or `dbSnp153.bb` / `dbSnp151.bb` if you set `--dbsnp-version`)
@@ -39,6 +44,10 @@ Tip: if you have bandwidth, `aria2c` can speed this up:
 ```bash
 aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb
 mv dbSnp155_hg38.bb ./data/
+```
+If you do not have `aria2c`, use `curl`:
+```bash
+curl -L http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb -o ./data/dbSnp155_hg38.bb
 ```
 
 3) Run with `--bb-file`:
