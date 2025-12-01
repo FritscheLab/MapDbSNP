@@ -14,9 +14,10 @@ source(here::here("script/reference_data.R"))
 option_list <- list(
   make_option("--input", type = "character", default = "", help = "file with summary statistics"),
   make_option("--ID", type = "character", default = "ID", help = "column name with SNP ID"),
-  make_option("--build", type = "character", default = "hg19", help = "Genome Build, hg19 or hg38"),
+  make_option("--build", type = "character", default = "hg38", help = "Genome Build, hg19 or hg38"),
   make_option("--dbsnp-version", type = "character", default = "155", help = "dbSNP release to use (151 or 155)"),
   make_option("--bb-file", type = "character", default = "", help = "Path to dbSNP BigBed file (dbSnp155.bb). Overrides text-based lookup when provided."),
+  make_option("--no-bb", action = "store_true", default = FALSE, help = "Disable BigBed fast path and force text-based lookup"),
   make_option("--data-dir", type = "character", default = "", help = "Directory for reference data (default: ./data)"),
   make_option("--outdir", type = "character", default = "", help = "Output directory"),
   make_option("--prefix", type = "character", default = "", help = "Prefix for output file name without path"),
@@ -51,13 +52,17 @@ find_bigbed_tool <- function() {
   stop("bigBedNamedItems not found. Download it from UCSC (see README) or place it in ./script/.")
 }
 
-bb_file <- opt$bb_file
-if (!nzchar(bb_file)) {
-  default_bb <- file.path(data_dir, sprintf("dbSnp%s.bb", version))
-  if (file.exists(default_bb)) bb_file <- default_bb
-}
-if (nzchar(bb_file) && !file.exists(bb_file)) {
-  stop(sprintf("BigBed file not found: %s", bb_file))
+bb_file <- ""
+if (!isTRUE(opt$no_bb)) {
+  if (nzchar(opt$bb_file)) {
+    if (!file.exists(opt$bb_file)) stop(sprintf("BigBed file not found: %s", opt$bb_file))
+    bb_file <- opt$bb_file
+  } else {
+    bb_file <- tryCatch(ensure_bigbed(build, version, data_dir), error = function(e) {
+      message("BigBed unavailable, falling back to text-based lookup: ", e$message)
+      ""
+    })
+  }
 }
 
 if (isTRUE(opt$prepare_only)) {
@@ -130,7 +135,7 @@ if (nzchar(bb_file)) {
   }
 } else {
   # part 2: extract positions from dbSNP text files
-  message(sprintf("Extracting positions from dbSNP%s (%s)", version, build))
+  message(sprintf("Extracting positions from dbSNP%s (%s) via legacy text pipeline (slow). Prefer BigBed for speed.", version, build))
   dbsnp <- reference$split_files
   outfiles <- file.path(work_dir, paste0(basename(dbsnp), "_", seq_along(dbsnp), ".txt"))
   awk_extract <- paste("awk -f", shQuote(here::here("script", "Extract_SNPs_dbSNP_awk.txt")))

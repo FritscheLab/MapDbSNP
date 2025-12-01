@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BB_FILE="./data/dbSnp155.bb" # Set to your BigBed file to enable fast lookup
+BB_FILE="./data/dbSnp155_hg38.bb" # Set to your BigBed file to enable fast lookup
 BB_ARG=()
 if [ -f "$BB_FILE" ]; then
   BB_ARG=( "--bb-file=${BB_FILE}" )
@@ -11,6 +11,7 @@ CMD=(
   --input=./example/example_input.txt
   --ID=ID
   --build=hg19
+  --build=hg38
   --dbsnp-version=155
   --outdir=./example
   --prefix=example

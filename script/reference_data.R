@@ -1,26 +1,60 @@
 SUPPORTED_BUILDS <- c("hg19", "hg38")
-SUPPORTED_DBSNP_VERSIONS <- c("151", "155")
+SUPPORTED_DBSNP_VERSIONS <- c("151", "153", "155")
 
 REFERENCE_URLS <- list(
   hg19 = list(
     "151" = "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/snp151.txt.gz",
+    "153" = "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/snp153.txt.gz",
     "155" = "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/snp155.txt.gz"
   ),
   hg38 = list(
     "151" = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/snp151.txt.gz",
+    "153" = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/snp153.txt.gz",
     "155" = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/snp155.txt.gz"
   )
 )
 
 RS_MERGE_URL <- "https://ftp.ncbi.nih.gov/snp/organisms/human_9606/database/organism_data/RsMergeArch.bcp.gz"
 
+# BigBed sources (much smaller than text dumps)
+BIGBED_URLS <- list(
+  hg19 = list(
+    "153" = "http://hgdownload.soe.ucsc.edu/gbdb/hg19/snp/dbSnp153.bb",
+    "155" = "http://hgdownload.soe.ucsc.edu/gbdb/hg19/snp/dbSnp155.bb",
+    "151" = "http://hgdownload.soe.ucsc.edu/gbdb/hg19/snp/dbSnp151.bb"
+  ),
+  hg38 = list(
+    "153" = "http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp153.bb",
+    "155" = "http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb",
+    "151" = "http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp151.bb"
+  )
+)
+
 ensure_dir <- function(path) {
   if (!dir.exists(path)) dir.create(path, recursive = TRUE, showWarnings = FALSE)
 }
 
-download_if_missing <- function(url, destfile) {
+download_if_missing <- function(url, destfile, connections = 8) {
   if (file.exists(destfile)) return(invisible(destfile))
+  ensure_dir(dirname(destfile))
   message(sprintf("Downloading %s", url))
+
+  aria <- Sys.which("aria2c")
+  if (nzchar(aria)) {
+    # Use multi-connection download when available
+    args <- c(
+      sprintf("-x%d", connections),
+      sprintf("-s%d", connections),
+      "-k1M",
+      "-m3",
+      "-o", basename(destfile),
+      url
+    )
+    status <- system2(aria, args = args, stdout = "", stderr = "")
+    if (identical(status, 0L) && file.exists(destfile)) return(invisible(destfile))
+    message("aria2c download failed or incomplete, falling back to download.file()")
+  }
+
   download.file(url = url, destfile = destfile, mode = "wb", quiet = FALSE)
   invisible(destfile)
 }
@@ -111,6 +145,31 @@ ensure_reference_data <- function(build,
   if (length(split_files) == 0) stop("No split dbSNP files were created")
 
   list(filtered_path = filtered_path, split_files = sort(split_files))
+}
+
+ensure_bigbed <- function(build,
+                          version,
+                          data_dir = here::here("data"),
+                          download = TRUE) {
+  build <- tolower(build)
+  version <- as.character(version)
+  ensure_dir(data_dir)
+
+  # Prefer build-specific filename to avoid collisions if both builds are stored
+  target <- file.path(data_dir, sprintf("dbSnp%s_%s.bb", version, build))
+
+  # Backward-compatible fallback to legacy name without build
+  legacy <- file.path(data_dir, sprintf("dbSnp%s.bb", version))
+  if (file.exists(target)) return(target)
+  if (file.exists(legacy)) return(legacy)
+
+  if (!download) return("")
+  url <- BIGBED_URLS[[build]][[version]]
+  if (is.null(url)) stop(sprintf("No BigBed URL configured for build=%s version=%s", build, version))
+
+  message(sprintf("Downloading dbSNP%s BigBed for %s", version, build))
+  download_if_missing(url, target)
+  target
 }
 
 ensure_rsmerge <- function(data_dir = here::here("data")) {
