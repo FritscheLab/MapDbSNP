@@ -26,15 +26,12 @@ Install `aria2c` (optional, for faster downloads):
 Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk` scan.
 
 1) Download the utility (place it in `./script/` or your `PATH`):
-```bash
-wget http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -O ./script/bigBedNamedItems
-chmod +x ./script/bigBedNamedItems
-```
-If `wget` is not available, use `curl`:
-```bash
-curl -L http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems
-chmod +x ./script/bigBedNamedItems
-```
+- macOS (Apple Silicon):  
+  `curl -L http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.arm64/bigBedNamedItems -o ./script/bigBedNamedItems && chmod +x ./script/bigBedNamedItems`
+- macOS (Intel):  
+  `curl -L http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems && chmod +x ./script/bigBedNamedItems`
+- Linux (x86_64):  
+  `curl -L http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems && chmod +x ./script/bigBedNamedItems`
 
 2) Download the dbSNP BigBed for your build (defaults to `./data/dbSnp<version>_<build>.bb`):
 - hg38 (default): `http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb` (or `dbSnp153.bb` / `dbSnp151.bb` if you set `--dbsnp-version`)
@@ -115,6 +112,75 @@ Rscript ./script/positionsFromDBSNP.r \
   --prefix=example \
   --data-dir=./data \
   --cpus=16
+```
+
+## Start-to-finish quickstarts
+
+### macOS (Apple Silicon)
+```bash
+# Install aria2 (optional, faster downloads)
+brew install aria2
+
+# Get UCSC BigBed tool (Apple Silicon) and make executable
+curl -L http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.arm64/bigBedNamedItems -o ./script/bigBedNamedItems
+chmod +x ./script/bigBedNamedItems
+
+# Download dbSNP BigBed (hg38/dbSNP155)
+aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb
+mv dbSnp155_hg38.bb ./data/
+
+# Install R deps
+Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
+
+# Run example
+Rscript ./script/positionsFromDBSNP.r \
+  --input=./example/example_input.txt \
+  --ID=ID \
+  --build=hg38 \
+  --dbsnp-version=155 \
+  --bb-file=./data/dbSnp155_hg38.bb \
+  --outdir=./example \
+  --prefix=example_bb \
+  --data-dir=./data
+```
+
+### macOS (Intel)
+```bash
+brew install aria2
+curl -L http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems
+chmod +x ./script/bigBedNamedItems
+aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb
+mv dbSnp155_hg38.bb ./data/
+Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
+Rscript ./script/positionsFromDBSNP.r --input=./example/example_input.txt --ID=ID --build=hg38 --dbsnp-version=155 --bb-file=./data/dbSnp155_hg38.bb --outdir=./example --prefix=example_bb --data-dir=./data
+```
+
+### Linux (x86_64)
+```bash
+# Install aria2 (Debian/Ubuntu example)
+sudo apt-get update && sudo apt-get install -y aria2
+
+# Get UCSC BigBed tool (Linux x86_64)
+curl -L http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems
+chmod +x ./script/bigBedNamedItems
+
+# Download dbSNP BigBed (hg38/dbSNP155)
+aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb
+mv dbSnp155_hg38.bb ./data/
+
+# Install R deps
+Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
+
+# Run example
+Rscript ./script/positionsFromDBSNP.r \
+  --input=./example/example_input.txt \
+  --ID=ID \
+  --build=hg38 \
+  --dbsnp-version=155 \
+  --bb-file=./data/dbSnp155_hg38.bb \
+  --outdir=./example \
+  --prefix=example_bb \
+  --data-dir=./data
 ```
 
 ## References

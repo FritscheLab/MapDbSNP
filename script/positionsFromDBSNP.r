@@ -30,14 +30,26 @@ args <- parse_args(parser, positional_arguments = 0)
 opt <- args$options
 print(t(data.frame(opt)))
 
+get_opt <- function(x, name, default = NULL) {
+  candidates <- unique(c(name, gsub("\\.", "_", name), gsub("_", ".", name)))
+  for (n in candidates) {
+    if (!is.null(x[[n]])) {
+      val <- x[[n]]
+      if (length(val) > 0) return(val)
+    }
+  }
+  default
+}
+
 ID <- opt$ID
 input <- opt$input
 outdir <- opt$outdir
 prefix <- opt$prefix
 cpus <- opt$cpus
 build <- tolower(opt$build)
-version <- as.character(opt$dbsnp_version)
-data_dir <- if (nzchar(opt$data_dir)) opt$data_dir else here::here("data")
+version <- as.character(get_opt(opt, "dbsnp.version", "155"))
+data_dir <- get_opt(opt, "data.dir", here::here("data"))
+skip <- as.integer(get_opt(opt, "skip", 0))
 
 if (!build %in% SUPPORTED_BUILDS) stop(sprintf("Unsupported build '%s'", build))
 if (!version %in% SUPPORTED_DBSNP_VERSIONS) stop(sprintf("Unsupported dbSNP version '%s'", version))
@@ -53,10 +65,12 @@ find_bigbed_tool <- function() {
 }
 
 bb_file <- ""
-if (!isTRUE(opt$no_bb)) {
-  if (nzchar(opt$bb_file)) {
-    if (!file.exists(opt$bb_file)) stop(sprintf("BigBed file not found: %s", opt$bb_file))
-    bb_file <- opt$bb_file
+no_bb <- isTRUE(get_opt(opt, "no.bb", FALSE))
+if (!no_bb) {
+  supplied_bb <- get_opt(opt, "bb.file", "")
+  if (nzchar(supplied_bb)) {
+    if (!file.exists(supplied_bb)) stop(sprintf("BigBed file not found: %s", supplied_bb))
+    bb_file <- supplied_bb
   } else {
     bb_file <- tryCatch(ensure_bigbed(build, version, data_dir), error = function(e) {
       message("BigBed unavailable, falling back to text-based lookup: ", e$message)
@@ -65,7 +79,9 @@ if (!isTRUE(opt$no_bb)) {
   }
 }
 
-if (isTRUE(opt$prepare_only)) {
+prepare_only <- isTRUE(get_opt(opt, "prepare.only", FALSE))
+
+if (prepare_only) {
   if (!nzchar(bb_file)) {
     ensure_reference_data(build, version, data_dir, cpus = cpus)
   }
@@ -85,9 +101,9 @@ setDTthreads(cpus)
 reference <- if (!nzchar(bb_file)) ensure_reference_data(build, version, data_dir, cpus = cpus) else NULL
 RsMerge <- ensure_rsmerge(data_dir)
 
-if (opt$skip > 0) {
+if (skip > 0) {
   stripped <- tempfile(fileext = ".txt")
-  system(sprintf("tail -n +%s %s > %s", opt$skip + 1, shQuote(input), shQuote(stripped)))
+  system(sprintf("tail -n +%s %s > %s", skip + 1, shQuote(input), shQuote(stripped)))
   input <- stripped
 }
 
