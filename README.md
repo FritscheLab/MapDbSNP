@@ -14,6 +14,13 @@ Install the R dependencies with:
 Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
 ```
 
+Install `aria2c` (optional, for faster downloads):
+
+- Conda: `conda install -c conda-forge aria2`
+- Homebrew (macOS): `brew install aria2`
+- Debian/Ubuntu: `sudo apt-get install -y aria2`
+- RHEL/CentOS: `sudo yum install -y aria2`
+
 ## BigBed fast path (recommended)
 
 Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk` scan.
