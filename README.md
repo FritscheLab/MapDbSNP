@@ -1,39 +1,61 @@
 # MapDbSNP
 
-* UNIX commands and Rscripts will add positions to data that only contains dbSNP IDs
-* Will download dbSNP151 from UCSC genome browser and prepare files for future runs (~90 GB hard disk space)
+Tools to add genomic positions to files that contain dbSNP IDs. The pipeline downloads dbSNP from the UCSC genome browser, filters to the required columns, splits the reference for faster lookups, and then maps IDs in parallel.
 
-## Required R packages
+## Requirements
 
-* data.table
-* optparse
-* parallel
-* here
+- R packages: `data.table`, `optparse`, `parallel`, `here`
+- Command line tools: `split`, `gzip` (optional: `pigz` for faster decompression)
 
+Install the R dependencies with:
+
+```bash
+Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
+```
+
+## Preparing reference data (recommended)
+
+Download and preprocess dbSNP once, then reuse across runs:
+
+```bash
+Rscript ./script/prepare_reference_data.R \
+  --build=both \
+  --dbsnp-version=155 \
+  --data-dir=./data \
+  --cpus=8
+```
+
+This fetches dbSNP 155 for hg19 and hg38 (~90–100 GB total after splitting) and the RsMerge archive, storing everything under `./data`. Use `--build=hg19` or `--build=hg38` to limit downloads, and `--split-lines` to adjust chunk size.
 
 ## Usage
 
-```{bash}
+```bash
 Rscript ./script/positionsFromDBSNP.r [options]
 ```
 
-### Options:
+Key options:
 
---input=path to file with dbSNP IDs, e.g. summary statistics  
---ID=column name with dbSNP IDs  
---build=Genome Build: hg19 or hg38  
---outdir=Path of output directory  
---prefix=Prefix for output file name without path or extension  
---cpus=Number of available CPUs for parallel runs (uses up to 64 for hg19 or 68 for hg38)  
---skip=Skip lines of input file  
+- `--input` path to file with dbSNP IDs (e.g., summary statistics)
+- `--ID` column name containing dbSNP IDs (default: `ID`)
+- `--build` genome build: `hg19` or `hg38`
+- `--dbsnp-version` dbSNP release to use (`151` or `155`, default: `155`)
+- `--data-dir` directory for reference data (default: `./data`)
+- `--outdir` output directory
+- `--prefix` prefix for output file name (defaults to input filename)
+- `--cpus` CPUs to use for parallel lookups
+- `--skip` skip this many lines in the input file
+- `--prepare-only` download reference data and exit
 
-## Example command line:
-```{bash}
+## Example
+
+```bash
 Rscript ./script/positionsFromDBSNP.r \
---input=./example/example_input.txt \
---ID=ID \
---build=hg19 \
---outdir=./example \
---prefix=example \
---cpus=16
+  --input=./example/example_input.txt \
+  --ID=ID \
+  --build=hg19 \
+  --dbsnp-version=155 \
+  --outdir=./example \
+  --prefix=example \
+  --data-dir=./data \
+  --cpus=16
 ```
