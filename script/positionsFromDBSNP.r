@@ -23,6 +23,7 @@ option_list <- list(
   make_option("--prefix", type = "character", default = "", help = "Prefix for output file name without path"),
   make_option("--cpus", type = "integer", default = 4, help = "CPUs"),
   make_option("--chunk-size", type = "integer", default = 1000000, help = "Rows per chunk for BigBed streaming mode (default: 1,000,000)"),
+  make_option("--bb-workers", type = "integer", default = 0, help = "Parallel workers for BigBed chunk processing (0 = use --cpus)"),
   make_option("--skip", type = "integer", default = 0, help = "Skip lines"),
   make_option("--prepare-only", action = "store_true", default = FALSE, help = "Only download/prepare reference data and exit")
 )
@@ -57,6 +58,7 @@ outdir <- opt$outdir
 prefix <- opt$prefix
 cpus <- opt$cpus
 chunk_size <- as.integer(get_opt(opt, "chunk.size", 1000000))
+bb_workers <- as.integer(get_opt(opt, "bb.workers", 0))
 build <- tolower(opt$build)
 version <- as.character(get_opt(opt, "dbsnp.version", "155"))
 data_dir <- get_opt(opt, "data.dir", "")
@@ -66,6 +68,8 @@ skip <- as.integer(get_opt(opt, "skip", 0))
 if (!build %in% SUPPORTED_BUILDS) stop(sprintf("Unsupported build '%s'", build))
 if (!version %in% SUPPORTED_DBSNP_VERSIONS) stop(sprintf("Unsupported dbSNP version '%s'", version))
 if (is.na(chunk_size) || chunk_size < 1L) stop("--chunk-size must be >= 1")
+if (is.na(bb_workers) || bb_workers < 0L) stop("--bb-workers must be >= 0")
+if (bb_workers == 0L) bb_workers <- max(1L, as.integer(cpus))
 
 ensure_dir(data_dir)
 
@@ -209,25 +213,32 @@ if (nzchar(bb_file)) {
 
   bb_tool <- find_bigbed_tool()
   matched_stream_file <- file.path(work_dir, "matched_unsorted.tsv")
-  nomatch_stream_file <- file.path(work_dir, "nomatch.tsv")
-  first_match <- TRUE
-  first_nomatch <- TRUE
   total_chunks <- length(chunk_files)
+  worker_count <- if (total_chunks > 0L) max(1L, min(total_chunks, bb_workers)) else 0L
+  if (.Platform$OS.type == "windows" && worker_count > 1L) worker_count <- 1L
+  nomatch_parts <- character()
+  total_matches <- 0L
+  total_nomatch <- 0L
 
   if (total_chunks == 0L) {
     out_cols <- c(ID, "CHROM", "POS", setdiff(renamed_cols, ID))
     empty <- as.data.table(setNames(replicate(length(out_cols), logical(0), simplify = FALSE), out_cols))
     fwrite(empty, output_main, sep = "\t", quote = FALSE)
   } else {
-    for (i in seq_along(chunk_files)) {
+    process_chunk <- function(i) {
+      data.table::setDTthreads(1L)
       chunk <- fread(chunk_files[[i]], header = FALSE, col.names = input_cols, showProgress = FALSE)
-      if (nrow(chunk) == 0L) next
+      if (nrow(chunk) == 0L) {
+        return(list(matched_file = "", nomatch_file = "", matched_n = 0L, nomatch_n = 0L))
+      }
 
       setnames(chunk, c("CHROM", "POS0", "POS"), c("CHROM_old", "POS0_old", "POS_old"), skip_absent = TRUE)
       chunk_ids <- as.character(chunk[[ID]])
       query_ids <- unique(chunk_ids[grep("^rs", chunk_ids)])
       snppos <- data.table(CHROM = character(), POS0 = integer(), POS = integer(), ID = character())
       matched <- NULL
+      matched_file <- file.path(work_dir, sprintf("matched_%05d.tsv", i))
+      nomatch_file <- file.path(work_dir, sprintf("nomatch_%05d.tsv", i))
 
       if (length(query_ids) > 0L) {
         ids_file <- file.path(work_dir, sprintf("ids_%05d.txt", i))
@@ -255,8 +266,7 @@ if (nzchar(bb_file)) {
         indels <- which(matched$POS - matched$POS0 > 1)
         if (length(indels) > 0) matched[indels, POS := POS0]
         matched[, POS0 := NULL]
-        fwrite(matched, matched_stream_file, sep = "\t", quote = FALSE, append = !first_match, col.names = first_match)
-        first_match <- FALSE
+        fwrite(matched, matched_file, sep = "\t", quote = FALSE, col.names = FALSE)
 
         matched_ids <- unique(as.character(snppos[[ID]]))
         misses <- chunk[!chunk_ids %chin% matched_ids]
@@ -265,16 +275,37 @@ if (nzchar(bb_file)) {
       }
 
       if (nrow(misses) > 0L) {
-        fwrite(misses, nomatch_stream_file, sep = "\t", quote = FALSE, append = !first_nomatch, col.names = first_nomatch)
-        first_nomatch <- FALSE
+        fwrite(misses, nomatch_file, sep = "\t", quote = FALSE, col.names = FALSE)
       }
 
-      if (i %% 5L == 0L || i == total_chunks) {
-        message(sprintf("Processed chunk %d/%d", i, total_chunks))
-      }
-
+      matched_n <- if (!is.null(matched)) nrow(matched) else 0L
+      nomatch_n <- nrow(misses)
       rm(chunk, chunk_ids, query_ids, snppos, matched, misses)
       gc(verbose = FALSE)
+      list(matched_file = matched_file, nomatch_file = nomatch_file, matched_n = matched_n, nomatch_n = nomatch_n)
+    }
+
+    message(sprintf("Running BigBed chunk processing with %d worker(s) across %d chunk(s)", worker_count, total_chunks))
+    idx <- seq_along(chunk_files)
+    chunk_results <- if (worker_count == 1L) {
+      lapply(idx, process_chunk)
+    } else {
+      parallel::mclapply(idx, process_chunk, mc.cores = worker_count, mc.preschedule = FALSE)
+    }
+
+    matched_parts <- unlist(lapply(chunk_results, `[[`, "matched_file"), use.names = FALSE)
+    matched_parts <- matched_parts[nzchar(matched_parts) & file.exists(matched_parts) & file.info(matched_parts)$size > 0]
+    nomatch_parts <- unlist(lapply(chunk_results, `[[`, "nomatch_file"), use.names = FALSE)
+    nomatch_parts <- nomatch_parts[nzchar(nomatch_parts) & file.exists(nomatch_parts) & file.info(nomatch_parts)$size > 0]
+    total_matches <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "matched_n"), use.names = FALSE)))
+    total_nomatch <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "nomatch_n"), use.names = FALSE)))
+
+    if (length(matched_parts) > 0L) {
+      writeLines(paste(c(ID, "CHROM", "POS", setdiff(renamed_cols, ID)), collapse = "\t"), matched_stream_file)
+      for (part in matched_parts) {
+        status <- system(sprintf("cat %s >> %s", shQuote(part), shQuote(matched_stream_file)))
+        if (!identical(status, 0L)) stop("Failed to append matched chunk output")
+      }
     }
 
     if (file.exists(matched_stream_file) && file.info(matched_stream_file)$size > 0) {
@@ -287,9 +318,14 @@ if (nzchar(bb_file)) {
     }
   }
 
-  if (file.exists(nomatch_stream_file) && file.info(nomatch_stream_file)$size > 0) {
-    file.copy(nomatch_stream_file, output_nomatch, overwrite = TRUE)
+  if (length(nomatch_parts) > 0L) {
+    writeLines(paste(renamed_cols, collapse = "\t"), output_nomatch)
+    for (part in nomatch_parts) {
+      status <- system(sprintf("cat %s >> %s", shQuote(part), shQuote(output_nomatch)))
+      if (!identical(status, 0L)) stop("Failed to append no-match chunk output")
+    }
   }
+  message(sprintf("BigBed chunk processing complete: matched=%s, noMatch=%s", format(total_matches, big.mark = ","), format(total_nomatch, big.mark = ",")))
 } else {
   updated1 <- fread(cmd = awk_merge, sep = "\t", header = TRUE, showProgress = FALSE)
   temp1 <- tempfile(fileext = ".txt", tmpdir = work_dir)
