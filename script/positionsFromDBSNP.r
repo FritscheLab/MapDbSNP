@@ -32,7 +32,14 @@ opt <- args$options
 print(t(data.frame(opt)))
 
 get_opt <- function(x, name, default = NULL) {
-  candidates <- unique(c(name, gsub("\\.", "_", name), gsub("_", ".", name)))
+  candidates <- unique(c(
+    name,
+    gsub("\\.", "_", name),
+    gsub("_", ".", name),
+    gsub("[._]", "-", name),
+    gsub("-", ".", name),
+    gsub("-", "_", name)
+  ))
   for (n in candidates) {
     if (!is.null(x[[n]])) {
       val <- x[[n]]
@@ -52,7 +59,8 @@ cpus <- opt$cpus
 chunk_size <- as.integer(get_opt(opt, "chunk.size", 1000000))
 build <- tolower(opt$build)
 version <- as.character(get_opt(opt, "dbsnp.version", "155"))
-data_dir <- get_opt(opt, "data.dir", here::here("data"))
+data_dir <- get_opt(opt, "data.dir", "")
+if (!nzchar(data_dir)) data_dir <- here::here("data")
 skip <- as.integer(get_opt(opt, "skip", 0))
 
 if (!build %in% SUPPORTED_BUILDS) stop(sprintf("Unsupported build '%s'", build))
