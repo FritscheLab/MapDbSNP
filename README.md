@@ -31,7 +31,7 @@ Linux/HPC users should also install `bigBedNamedItems` from Bioconda into the sa
 ```bash
 mamba activate mapdbsnp
 mamba install -n mapdbsnp -c bioconda ucsc-bigbednameditems -y
-ln -sf "$(which bigBedNamedItems)" ./script/bigBedNamedItems
+which bigBedNamedItems
 ```
 
 If you are not using mamba, install the R dependencies with:
@@ -56,7 +56,7 @@ Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk
   ```bash
   mamba activate mapdbsnp
   mamba install -n mapdbsnp -c bioconda ucsc-bigbednameditems -y
-  ln -sf "$(which bigBedNamedItems)" ./script/bigBedNamedItems
+  which bigBedNamedItems
   ```
 - macOS (Apple Silicon, manual UCSC binary):  
   `curl -L http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.arm64/bigBedNamedItems -o ./script/bigBedNamedItems && chmod +x ./script/bigBedNamedItems`
@@ -65,14 +65,14 @@ Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk
 - Linux (x86_64, manual UCSC binary):  
   `curl -L http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems && chmod +x ./script/bigBedNamedItems`
 
-If you are on an HPC (or older enterprise Linux) and see errors like `GLIBC_2.29 not found` / `GLIBC_2.33 not found` / `GLIBC_2.34 not found`, use the Bioconda build in the `mapdbsnp` env:
+If you are on an HPC (or older enterprise Linux) and see errors like `GLIBC_2.29 not found` / `GLIBC_2.33 not found` / `GLIBC_2.34 not found`, use the Bioconda build in the `mapdbsnp` env. The script resolves `bigBedNamedItems` from `PATH` first.
 
 ```bash
 mamba activate mapdbsnp
 mamba install -n mapdbsnp -c bioconda ucsc-bigbednameditems -y
-ln -sf "$(which bigBedNamedItems)" ./script/bigBedNamedItems
-file ./script/bigBedNamedItems
-ldd ./script/bigBedNamedItems | head
+which bigBedNamedItems
+file "$(which bigBedNamedItems)"
+ldd "$(which bigBedNamedItems)" | head
 ```
 
 2) Download the dbSNP BigBed for your build (defaults to `./data/dbSnp<version>_<build>.bb`):
@@ -91,6 +91,7 @@ curl -L http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb -o ./data/dbSnp
 
 3) Run with `--bb-file`:
 ```bash
+mamba activate mapdbsnp
 Rscript ./script/positionsFromDBSNP.r \
   --input=./example/example_input.txt \
   --ID=ID \
@@ -110,6 +111,7 @@ Use this only if you are not using the BigBed fast path. It downloads and splits
 Download and preprocess dbSNP once, then reuse across runs:
 
 ```bash
+mamba activate mapdbsnp
 Rscript ./script/prepare_reference_data.R \
   --build=both \
   --dbsnp-version=155 \
@@ -124,6 +126,7 @@ Warning: the text/awk path is legacy and slow for large inputs; prefer the BigBe
 ## Usage
 
 ```bash
+mamba activate mapdbsnp
 Rscript ./script/positionsFromDBSNP.r [options]
 ```
 
@@ -145,6 +148,7 @@ Key options:
 ## Example (text pipeline)
 
 ```bash
+mamba activate mapdbsnp
 Rscript ./script/positionsFromDBSNP.r \
   --input=./example/example_input.txt \
   --ID=ID \
@@ -160,8 +164,9 @@ Rscript ./script/positionsFromDBSNP.r \
 
 ### macOS (Apple Silicon)
 ```bash
-# Install aria2 (optional, faster downloads)
-brew install aria2
+# Create environment once, then activate it in each new shell
+mamba env create -f environment.yml
+mamba activate mapdbsnp
 
 # Get UCSC BigBed tool (Apple Silicon) and make executable
 curl -L http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.arm64/bigBedNamedItems -o ./script/bigBedNamedItems
@@ -170,9 +175,6 @@ chmod +x ./script/bigBedNamedItems
 # Download dbSNP BigBed (hg38/dbSNP155)
 aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb
 mv dbSnp155_hg38.bb ./data/
-
-# Install R deps
-Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
 
 # Run example
 Rscript ./script/positionsFromDBSNP.r \
@@ -188,30 +190,30 @@ Rscript ./script/positionsFromDBSNP.r \
 
 ### macOS (Intel)
 ```bash
-brew install aria2
+# Create environment once, then activate it in each new shell
+mamba env create -f environment.yml
+mamba activate mapdbsnp
+
 curl -L http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems
 chmod +x ./script/bigBedNamedItems
 aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb
 mv dbSnp155_hg38.bb ./data/
-Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
 Rscript ./script/positionsFromDBSNP.r --input=./example/example_input.txt --ID=ID --build=hg38 --dbsnp-version=155 --bb-file=./data/dbSnp155_hg38.bb --outdir=./example --prefix=example_bb --data-dir=./data
 ```
 
 ### Linux (x86_64)
 ```bash
-# Install aria2 (Debian/Ubuntu example)
-sudo apt-get update && sudo apt-get install -y aria2
+# Create environment once, then activate it in each new shell
+mamba env create -f environment.yml
+mamba activate mapdbsnp
 
-# Get UCSC BigBed tool (Linux x86_64)
-curl -L http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bigBedNamedItems -o ./script/bigBedNamedItems
-chmod +x ./script/bigBedNamedItems
+# Install BigBed utility in the environment and use it from PATH
+mamba install -n mapdbsnp -c bioconda ucsc-bigbednameditems -y
+which bigBedNamedItems
 
 # Download dbSNP BigBed (hg38/dbSNP155)
 aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb
 mv dbSnp155_hg38.bb ./data/
-
-# Install R deps
-Rscript -e 'install.packages(c("data.table","optparse","parallel","here"))'
 
 # Run example
 Rscript ./script/positionsFromDBSNP.r \
@@ -227,13 +229,15 @@ Rscript ./script/positionsFromDBSNP.r \
 
 ### Linux HPC quickstart (mamba, avoids common GLIBC issues)
 ```bash
-# Create environment with BigBed tool + downloader + R deps
-mamba create -n mapdbsnp -c conda-forge -c bioconda \
-  ucsc-bigbednameditems aria2 r-base r-data.table r-optparse r-here pigz -y
+# Create environment once, then activate it in each new shell
+mamba env create -f environment.yml
 mamba activate mapdbsnp
 
-# Ensure MapDbSNP uses the environment binary
-ln -sf "$(which bigBedNamedItems)" ./script/bigBedNamedItems
+# Install BigBed utility in the environment and use it from PATH
+mamba install -n mapdbsnp -c bioconda ucsc-bigbednameditems -y
+which bigBedNamedItems
+file "$(which bigBedNamedItems)"
+ldd "$(which bigBedNamedItems)" | head
 
 # Download dbSNP BigBed (hg38/dbSNP155)
 aria2c -x8 -s8 -o dbSnp155_hg38.bb http://hgdownload.soe.ucsc.edu/gbdb/hg38/snp/dbSnp155.bb

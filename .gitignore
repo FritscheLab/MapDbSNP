@@ -8,4 +8,5 @@ data/
 *.swp
 *.bb
 *.aria2
+script/bigBedNamedItems
 example/example_bb_dbSNP155_hg38.txt

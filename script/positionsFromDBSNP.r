@@ -57,11 +57,11 @@ if (!version %in% SUPPORTED_DBSNP_VERSIONS) stop(sprintf("Unsupported dbSNP vers
 ensure_dir(data_dir)
 
 find_bigbed_tool <- function() {
-  candidate <- here::here("script", "bigBedNamedItems")
-  if (file.exists(candidate) && file.access(candidate, 1) == 0) return(candidate)
   sys <- Sys.which("bigBedNamedItems")
   if (nzchar(sys)) return(sys)
-  stop("bigBedNamedItems not found. Download it from UCSC (see README) or place it in ./script/.")
+  candidate <- here::here("script", "bigBedNamedItems")
+  if (file.exists(candidate) && file.access(candidate, 1) == 0) return(candidate)
+  stop("bigBedNamedItems not found in PATH or ./script/. Install it (see README).")
 }
 
 bb_file <- ""
