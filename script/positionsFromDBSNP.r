@@ -443,14 +443,55 @@ if (nzchar(bb_file)) {
         message(progress_line(done_chunks, total_chunks, t_chunks))
       }
     } else {
-      batches <- split(idx, ceiling(seq_along(idx) / worker_count))
-      for (batch_idx in batches) {
-        batch_res <- parallel::mclapply(batch_idx, process_chunk, mc.cores = length(batch_idx), mc.preschedule = FALSE)
-        for (k in seq_along(batch_idx)) {
-          chunk_results[[batch_idx[[k]]]] <- batch_res[[k]]
+      heartbeat_sec <- 15
+      next_submit <- 1L
+      active_jobs <- list()
+      last_heartbeat <- Sys.time()
+
+      while (done_chunks < total_chunks) {
+        while (length(active_jobs) < worker_count && next_submit <= total_chunks) {
+          chunk_i <- idx[[next_submit]]
+          job <- parallel::mcparallel(process_chunk(chunk_i), silent = TRUE)
+          active_jobs[[as.character(job$pid)]] <- list(job = job, idx = chunk_i)
+          next_submit <- next_submit + 1L
         }
-        done_chunks <- done_chunks + length(batch_idx)
-        message(progress_line(done_chunks, total_chunks, t_chunks))
+
+        if (length(active_jobs) == 0L) break
+
+        collected <- parallel::mccollect(lapply(active_jobs, `[[`, "job"), wait = FALSE)
+        made_progress <- FALSE
+        if (!is.null(collected) && length(collected) > 0L) {
+          for (pid in names(collected)) {
+            chunk_i <- active_jobs[[pid]]$idx
+            res_i <- collected[[pid]]
+            active_jobs[[pid]] <- NULL
+            if (inherits(res_i, "try-error")) {
+              stop(sprintf("Chunk %d failed: %s", chunk_i, as.character(res_i)))
+            }
+            chunk_results[[chunk_i]] <- res_i
+            done_chunks <- done_chunks + 1L
+            made_progress <- TRUE
+          }
+        }
+
+        now <- Sys.time()
+        if (made_progress) {
+          message(sprintf(
+            "%s (active=%d)",
+            progress_line(done_chunks, total_chunks, t_chunks),
+            length(active_jobs)
+          ))
+          last_heartbeat <- now
+        } else if (as.numeric(difftime(now, last_heartbeat, units = "secs")) >= heartbeat_sec) {
+          message(sprintf(
+            "%s (active=%d, waiting)",
+            progress_line(done_chunks, total_chunks, t_chunks, label = "BigBed heartbeat"),
+            length(active_jobs)
+          ))
+          last_heartbeat <- now
+        }
+
+        if (!made_progress) Sys.sleep(1)
       }
     }
 
