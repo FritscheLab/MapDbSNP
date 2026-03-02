@@ -1,0 +1,15 @@
+name: mapdbsnp
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base>=4.3
+  - r-data.table
+  - r-optparse
+  - r-here
+  - aria2
+  - pigz
+  - gzip
+  - coreutils
+  - gawk
+  - curl

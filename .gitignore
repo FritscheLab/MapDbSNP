@@ -8,3 +8,4 @@ data/
 *.swp
 *.bb
 *.aria2
+example/example_bb_dbSNP155_hg38.txt
