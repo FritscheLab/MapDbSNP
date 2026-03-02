@@ -231,14 +231,14 @@ if (nzchar(bb_file)) {
       # Base range keeps memory/perf stable for large inputs.
       effective_chunk_size <- as.integer(max(100000L, min(1000000L, auto_size)))
 
-      # If the base floor yields too few chunks for worker fan-out, scale down.
-      desired_parallel_chunks <- min(desired_workers, max(1L, total_data_rows %/% 10000L))
-      if (desired_parallel_chunks > 1L) {
-        max_chunk_for_parallel <- as.integer(ceiling(total_data_rows / desired_parallel_chunks))
-        if (effective_chunk_size > max_chunk_for_parallel) {
-          effective_chunk_size <- max(10000L, max_chunk_for_parallel)
+      # Ensure we can fan out to at least one chunk per worker when rows allow.
+      if (total_data_rows >= desired_workers) {
+        max_chunk_for_workers <- as.integer(ceiling(total_data_rows / desired_workers))
+        if (effective_chunk_size > max_chunk_for_workers) {
+          effective_chunk_size <- max_chunk_for_workers
         }
       }
+      effective_chunk_size <- max(1L, effective_chunk_size)
     } else {
       effective_chunk_size <- 1L
     }
