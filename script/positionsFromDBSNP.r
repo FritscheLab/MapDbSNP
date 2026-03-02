@@ -95,6 +95,19 @@ renamed_input_colnames <- function(cols) {
   out
 }
 
+normalize_rs_ids <- function(x) {
+  out <- trimws(as.character(x))
+  out[out %in% c("", "NA", "N/A")] <- NA_character_
+  bare_numeric <- !is.na(out) & grepl("^[0-9]+$", out)
+  out[bare_numeric] <- paste0("rs", out[bare_numeric])
+  out <- sub("^RS", "rs", out)
+  out
+}
+
+is_valid_rs_id <- function(x) {
+  !is.na(x) & grepl("^rs[0-9]+$", x)
+}
+
 format_seconds <- function(seconds) {
   sec <- max(0, as.numeric(seconds))
   hh <- floor(sec / 3600)
@@ -131,21 +144,28 @@ sort_output_by_coords <- function(infile, outfile, work_dir) {
   awk_script <- file.path(work_dir, "sort_mapdbsnp.awk")
   writeLines(c(
     "BEGIN {FS=OFS=\"\\t\"}",
+    "function chr_rank(chr, u) {",
+    "  u=toupper(chr);",
+    "  if (u ~ /^[0-9]+$/) return u+0;",
+    "  if (u == \"X\") return 23;",
+    "  if (u == \"Y\") return 24;",
+    "  if (u == \"M\" || u == \"MT\") return 25;",
+    "  return 999999;",
+    "}",
     "NR==1 {next}",
-    "{chr=$c; pos=$p; key=(chr ~ /^[0-9]+$/ ? chr+0 : 999999); print key, pos, $0}"
+    "{chr=toupper($c); pos=$p; print chr_rank(chr), chr, pos, $0}"
   ), awk_script)
 
   sorted_body <- file.path(work_dir, "sorted_body.tsv")
   sort_cmd <- sprintf(
-    "awk -v c=%d -v p=%d -f %s %s | LC_ALL=C sort -t$'\\t' -k1,1n -k2,2n | cut -f3- > %s",
+    "awk -v c=%d -v p=%d -f %s %s | LC_ALL=C sort -t$'\\t' -k1,1n -k2,2 -k3,3n | cut -f4- > %s",
     chrom_col,
     pos_col,
     shQuote(awk_script),
     shQuote(infile),
     shQuote(sorted_body)
   )
-  status <- system(sort_cmd)
-  if (!identical(status, 0L)) stop("Sorting mapped output failed")
+  run_shell_cmd(sort_cmd, pipefail = TRUE)
 
   writeLines(paste(hdr, collapse = "\t"), outfile)
   if (file.exists(sorted_body) && file.info(sorted_body)$size > 0) {
@@ -180,6 +200,14 @@ chrom_rank <- function(chr) {
   rank[x == "Y"] <- 24L
   rank[x %in% c("M", "MT")] <- 25L
   rank
+}
+
+normalize_mapped_positions <- function(dt) {
+  if (nrow(dt) == 0L) return(dt)
+  # UCSC tables are 0-start, half-open; expose POS as a consistent 1-based leftmost coordinate.
+  dt[, POS := as.integer(POS0) + 1L]
+  dt[, POS0 := NULL]
+  dt
 }
 
 split_multi_position_ids <- function(snppos, id_col) {
@@ -240,7 +268,7 @@ RsMerge <- ensure_rsmerge(data_dir)
 
 if (skip > 0) {
   stripped <- tempfile(fileext = ".txt")
-  system(sprintf("tail -n +%s %s > %s", skip + 1, shQuote(input), shQuote(stripped)))
+  run_shell_cmd(sprintf("tail -n +%s %s > %s", skip + 1, shQuote(input), shQuote(stripped)))
   input <- stripped
 }
 
@@ -264,16 +292,15 @@ ensure_dir(work_dir)
 on.exit(unlink(work_dir, recursive = TRUE, force = TRUE), add = TRUE)
 
 output_main <- file.path(outdir, sprintf("%s_dbSNP%s_%s.txt", prefix, version, build))
-output_nomatch <- file.path(outdir, sprintf("%s_noMatch_dbSNP%s.txt", prefix, version))
-output_multipos <- file.path(outdir, sprintf("%s_multiPos_dbSNP%s.txt", prefix, version))
+output_nomatch <- file.path(outdir, sprintf("%s_noMatch_dbSNP%s_%s.txt", prefix, version, build))
+output_multipos <- file.path(outdir, sprintf("%s_multiPos_dbSNP%s_%s.txt", prefix, version, build))
 
 if (nzchar(bb_file)) {
   message(sprintf("Extracting positions from BigBed: %s", bb_file))
   updated_file <- file.path(work_dir, "updated_input.tsv")
   message("Preparing rsID-updated temporary input...")
   t_update <- Sys.time()
-  status <- system(sprintf("%s > %s", awk_merge, shQuote(updated_file)))
-  if (!identical(status, 0L)) stop("Failed to update rsIDs before BigBed lookup")
+  run_shell_cmd(sprintf("%s > %s", awk_merge, shQuote(updated_file)))
   message(sprintf("Finished rsID update in %s", format_seconds(as.numeric(difftime(Sys.time(), t_update, units = "secs")))))
 
   input_cols <- names(fread(updated_file, nrows = 0, showProgress = FALSE))
@@ -311,8 +338,7 @@ if (nzchar(bb_file)) {
     effective_chunk_size,
     shQuote(split_prefix)
   )
-  status <- system(split_cmd)
-  if (!identical(status, 0L)) stop("Splitting updated input into chunks failed")
+  run_shell_cmd(split_cmd, pipefail = TRUE)
   chunk_files <- sort(list.files(work_dir, pattern = "^updated_chunk_[0-9]+$", full.names = TRUE))
   message(sprintf(
     "Created %s chunk(s) in %s",
@@ -352,8 +378,14 @@ if (nzchar(bb_file)) {
       }
 
       setnames(chunk, c("CHROM", "POS0", "POS"), c("CHROM_old", "POS0_old", "POS_old"), skip_absent = TRUE)
+      chunk[, (ID) := normalize_rs_ids(get(ID))]
       chunk_ids <- as.character(chunk[[ID]])
-      query_ids <- unique(chunk_ids[grep("^rs", chunk_ids)])
+      valid_ids <- is_valid_rs_id(chunk_ids)
+      invalid_n <- sum(!is.na(chunk_ids) & !valid_ids)
+      if (invalid_n > 0L) {
+        message(sprintf("Chunk %d: %d malformed values in '%s' will be written to no-match output", i, invalid_n, ID))
+      }
+      query_ids <- unique(chunk_ids[valid_ids])
       snppos <- data.table(CHROM = character(), POS0 = integer(), POS = integer(), ID = character())
       matched <- NULL
       filtered_alt <- 0L
@@ -400,13 +432,11 @@ if (nzchar(bb_file)) {
 
       if (nrow(snppos) > 0L) {
         matched <- merge(snppos, chunk, by = ID)
-        indels <- which(matched$POS - matched$POS0 > 1)
-        if (length(indels) > 0) matched[indels, POS := POS0]
-        matched[, POS0 := NULL]
+        matched <- normalize_mapped_positions(matched)
         fwrite(matched, matched_file, sep = "\t", quote = FALSE, col.names = FALSE)
 
         matched_ids <- unique(as.character(snppos[[ID]]))
-        misses <- chunk[!chunk_ids %chin% matched_ids]
+        misses <- chunk[!valid_ids | !chunk_ids %chin% matched_ids]
       } else {
         misses <- chunk
       }
@@ -557,9 +587,14 @@ if (nzchar(bb_file)) {
   ))
 } else {
   updated1 <- fread(cmd = awk_merge, sep = "\t", header = TRUE, showProgress = FALSE)
+  updated1[, (ID) := normalize_rs_ids(get(ID))]
   temp1 <- tempfile(fileext = ".txt", tmpdir = work_dir)
-  snpids <- as.character(updated1[[ID]])
-  snpids <- snpids[grep("^rs", snpids)]
+  valid_input_ids <- is_valid_rs_id(updated1[[ID]])
+  invalid_input_n <- sum(!is.na(updated1[[ID]]) & !valid_input_ids)
+  if (invalid_input_n > 0L) {
+    warning(sprintf("Input contains %d malformed values in '%s'; they will be written to the no-match file", invalid_input_n, ID))
+  }
+  snpids <- unique(as.character(updated1[[ID]][valid_input_ids]))
   writeLines(snpids, temp1)
 
   # part 2: extract positions from dbSNP text files
@@ -607,16 +642,14 @@ if (nzchar(bb_file)) {
   }
 
   updated2 <- merge(snppos, updated1, by = ID)
-  noMatch <- which(!updated1[[ID]] %in% snppos[[ID]])
+  noMatch <- which(!valid_input_ids | !updated1[[ID]] %in% snppos[[ID]])
   if (length(noMatch) > 0) {
     fwrite(updated1[noMatch, ], output_nomatch, sep = "\t", quote = FALSE)
   }
 
-  # Use zero based positions for larger indels to match VCF nomenclature
-  indels <- which(updated2$POS - updated2$POS0 > 1)
-  if (length(indels) > 0) updated2[indels, POS := POS0]
-  updated2[, POS0 := NULL]
-
-  suppressWarnings(updated2 <- updated2[order(as.numeric(CHROM), POS), ])
+  updated2 <- normalize_mapped_positions(updated2)
+  updated2[, CHROM_RANK := chrom_rank(CHROM)]
+  setorderv(updated2, c("CHROM_RANK", "CHROM", "POS", ID))
+  updated2[, CHROM_RANK := NULL]
   fwrite(updated2, output_main, sep = "\t", quote = FALSE)
 }

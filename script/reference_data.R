@@ -34,6 +34,21 @@ ensure_dir <- function(path) {
   if (!dir.exists(path)) dir.create(path, recursive = TRUE, showWarnings = FALSE)
 }
 
+run_shell_cmd <- function(cmd, pipefail = FALSE) {
+  if (pipefail) {
+    bash <- Sys.which("bash")
+    if (!nzchar(bash)) stop("bash is required for pipeline execution with pipefail")
+    # Use `system()` here; on some platforms `system2()` does not reliably enforce `-o pipefail`.
+    status <- system(sprintf("%s -o pipefail -c %s", shQuote(bash), shQuote(cmd)))
+  } else {
+    status <- system(cmd)
+  }
+  if (!identical(status, 0L)) {
+    stop(sprintf("Shell command failed (status=%s): %s", status, cmd))
+  }
+  invisible(status)
+}
+
 download_if_missing <- function(url, destfile, connections = 8) {
   if (file.exists(destfile)) return(invisible(destfile))
   ensure_dir(dirname(destfile))
@@ -41,12 +56,16 @@ download_if_missing <- function(url, destfile, connections = 8) {
 
   aria <- Sys.which("aria2c")
   if (nzchar(aria)) {
+    dest_dir <- normalizePath(dirname(destfile), winslash = "/", mustWork = FALSE)
     # Use multi-connection download when available
     args <- c(
       sprintf("-x%d", connections),
       sprintf("-s%d", connections),
       "-k1M",
       "-m3",
+      "--allow-overwrite=true",
+      "--auto-file-renaming=false",
+      "-d", dest_dir,
       "-o", basename(destfile),
       url
     )
@@ -81,6 +100,24 @@ split_files_for <- function(filtered_path, data_dir) {
   )
 }
 
+validate_split_reference <- function(filtered_path, split_files) {
+  if (!file.exists(filtered_path)) {
+    stop(sprintf(
+      "Found split dbSNP chunks but missing filtered reference '%s'. Remove stale chunks and rebuild.",
+      filtered_path
+    ))
+  }
+  if (length(split_files) == 0L) stop("No split dbSNP files found")
+  info <- file.info(split_files)
+  if (any(is.na(info$size)) || any(info$size <= 0L)) {
+    stop("Found zero-byte or unreadable dbSNP split files. Remove stale chunks and rebuild.")
+  }
+  filtered_info <- file.info(filtered_path)
+  if (is.na(filtered_info$size) || filtered_info$size <= 0L) {
+    stop("Filtered dbSNP reference is empty or unreadable. Remove stale files and rebuild.")
+  }
+}
+
 ensure_reference_data <- function(build,
                                   version,
                                   data_dir = here::here("data"),
@@ -106,6 +143,7 @@ ensure_reference_data <- function(build,
   split_files <- split_files_for(filtered_path, data_dir)
 
   if (length(split_files) > 0) {
+    validate_split_reference(filtered_path, split_files)
     return(list(filtered_path = filtered_path, split_files = sort(split_files)))
   }
 
@@ -120,13 +158,13 @@ ensure_reference_data <- function(build,
     filter_cmd <- paste(
       decompressor, shQuote(gz_path),
       "| cut -f 2-5",
-      "| grep -v -e Un_ -e hap -e random -e Y -e fix -e alt -e M\\t",
+      # Keep primary chromosomes (1-22, X, Y, M/MT); runtime filtering decides whether to drop non-primary contigs.
+      "| grep -v -e Un_ -e hap -e random -e fix -e alt",
       "| sed 's/chr//g' >",
       shQuote(filtered_path)
     )
     message(sprintf("Filtering dbSNP %s %s to %s", version, build, filtered_path))
-    status <- system(filter_cmd)
-    if (!identical(status, 0L)) stop("Filtering dbSNP reference failed")
+    run_shell_cmd(filter_cmd, pipefail = TRUE)
   }
 
   split_cmd <- paste(
@@ -136,13 +174,13 @@ ensure_reference_data <- function(build,
     shQuote(split_prefix_path)
   )
   message(sprintf("Splitting filtered file into chunks (prefix: %s)", split_prefix_path))
-  status <- system(split_cmd)
-  if (!identical(status, 0L)) stop("Splitting dbSNP reference failed")
+  run_shell_cmd(split_cmd)
 
   if (remove_download && file.exists(gz_path)) file.remove(gz_path)
 
   split_files <- split_files_for(filtered_path, data_dir)
   if (length(split_files) == 0) stop("No split dbSNP files were created")
+  validate_split_reference(filtered_path, split_files)
 
   list(filtered_path = filtered_path, split_files = sort(split_files))
 }
@@ -161,7 +199,14 @@ ensure_bigbed <- function(build,
   # Backward-compatible fallback to legacy name without build
   legacy <- file.path(data_dir, sprintf("dbSnp%s.bb", version))
   if (file.exists(target)) return(target)
-  if (file.exists(legacy)) return(legacy)
+  if (file.exists(legacy)) {
+    stop(sprintf(
+      "Found legacy BigBed '%s' without build in the filename. Refusing to guess whether it is for %s. Rename it to '%s' or pass --bb-file explicitly.",
+      legacy,
+      build,
+      basename(target)
+    ))
+  }
 
   if (!download) return("")
   url <- BIGBED_URLS[[build]][[version]]
