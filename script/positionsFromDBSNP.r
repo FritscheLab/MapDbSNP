@@ -287,18 +287,9 @@ if (nzchar(bb_file)) {
   effective_chunk_size <- as.integer(chunk_size)
   if (effective_chunk_size == 0L) {
     if (total_data_rows > 0L) {
-      target_chunks <- max(1L, desired_workers * 4L)
-      auto_size <- ceiling(total_data_rows / target_chunks)
-      # Base range keeps memory/perf stable for large inputs.
-      effective_chunk_size <- as.integer(max(100000L, min(1000000L, auto_size)))
-
-      # Ensure we can fan out to at least one chunk per worker when rows allow.
-      if (total_data_rows >= desired_workers) {
-        max_chunk_for_workers <- as.integer(ceiling(total_data_rows / desired_workers))
-        if (effective_chunk_size > max_chunk_for_workers) {
-          effective_chunk_size <- max_chunk_for_workers
-        }
-      }
+      # Auto mode: aim for ~1 chunk per worker for predictable fan-out and lower overhead.
+      target_chunks <- max(1L, desired_workers)
+      effective_chunk_size <- as.integer(ceiling(total_data_rows / target_chunks))
       effective_chunk_size <- max(1L, effective_chunk_size)
     } else {
       effective_chunk_size <- 1L
