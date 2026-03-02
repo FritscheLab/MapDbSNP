@@ -138,7 +138,7 @@ Key options:
 - `--ID` column name containing dbSNP IDs (default: `ID`)
 - `--build` genome build: `hg19` or `hg38`
 - `--dbsnp-version` dbSNP release to use (`151`, `153`, or `155`; default: `155`)
-- `--bb-file` path to dbSNP BigBed file (if set, text-based lookup is skipped; defaults to a downloaded `./data/dbSnp<version>_<build>.bb` when available)
+- `--bb-file` path to dbSNP BigBed file (if set, text-based lookup is skipped; relative names are also searched under `--data-dir`)
 - `--chunk-size` rows per chunk for BigBed streaming mode (`0` = auto from row count and workers; default: `0`)
 - `--bb-workers` optional override for BigBed chunk workers (`0` means use `--cpus`; default: `0`)
 - `--no-bb` disable the BigBed fast path and force text lookup

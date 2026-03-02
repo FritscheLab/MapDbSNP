@@ -139,8 +139,12 @@ no_bb <- isTRUE(get_opt(opt, "no.bb", FALSE))
 if (!no_bb) {
   supplied_bb <- get_opt(opt, "bb.file", "")
   if (nzchar(supplied_bb)) {
-    if (!file.exists(supplied_bb)) stop(sprintf("BigBed file not found: %s", supplied_bb))
-    bb_file <- supplied_bb
+    bb_candidates <- unique(c(supplied_bb, file.path(data_dir, supplied_bb)))
+    bb_existing <- bb_candidates[file.exists(bb_candidates)]
+    if (length(bb_existing) == 0L) {
+      stop(sprintf("BigBed file not found. Tried: %s", paste(bb_candidates, collapse = ", ")))
+    }
+    bb_file <- bb_existing[1]
   } else {
     bb_file <- tryCatch(ensure_bigbed(build, version, data_dir), error = function(e) {
       message("BigBed unavailable, falling back to text-based lookup: ", e$message)
