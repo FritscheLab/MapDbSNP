@@ -218,10 +218,23 @@ if (nzchar(bb_file)) {
   if (.Platform$OS.type == "windows" && desired_workers > 1L) desired_workers <- 1L
   effective_chunk_size <- as.integer(chunk_size)
   if (effective_chunk_size == 0L) {
-    target_chunks <- max(1L, desired_workers * 4L)
-    auto_size <- if (total_data_rows > 0L) ceiling(total_data_rows / target_chunks) else 1L
-    # Keep chunk sizes in a practical range for memory/perf balance.
-    effective_chunk_size <- as.integer(max(100000L, min(1000000L, auto_size)))
+    if (total_data_rows > 0L) {
+      target_chunks <- max(1L, desired_workers * 4L)
+      auto_size <- ceiling(total_data_rows / target_chunks)
+      # Base range keeps memory/perf stable for large inputs.
+      effective_chunk_size <- as.integer(max(100000L, min(1000000L, auto_size)))
+
+      # If the base floor yields too few chunks for worker fan-out, scale down.
+      desired_parallel_chunks <- min(desired_workers, max(1L, total_data_rows %/% 10000L))
+      if (desired_parallel_chunks > 1L) {
+        max_chunk_for_parallel <- as.integer(ceiling(total_data_rows / desired_parallel_chunks))
+        if (effective_chunk_size > max_chunk_for_parallel) {
+          effective_chunk_size <- max(10000L, max_chunk_for_parallel)
+        }
+      }
+    } else {
+      effective_chunk_size <- 1L
+    }
   }
   message(sprintf(
     "BigBed chunk settings: rows=%s workers=%d chunk_size=%s",
