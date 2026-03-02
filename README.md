@@ -51,6 +51,7 @@ Install `aria2c` (optional, for faster downloads):
 
 Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk` scan.
 BigBed mode streams the input in chunks and auto-sizes chunk length by input rows and workers (`--chunk-size=0`, default) to reduce peak RAM on very large inputs. Chunk processing is parallelized, defaulting to `--cpus` workers.
+By default, non-primary contigs (hap/alt/random-like chromosome names) are excluded from output.
 
 1) Ensure `bigBedNamedItems` is available:
 - Linux/HPC (recommended with mamba):
@@ -141,6 +142,7 @@ Key options:
 - `--bb-file` path to dbSNP BigBed file (if set, text-based lookup is skipped; relative names are also searched under `--data-dir`)
 - `--chunk-size` rows per chunk for BigBed streaming mode (`0` = auto from row count and workers; default: `0`)
 - `--bb-workers` optional override for BigBed chunk workers (`0` means use `--cpus`; default: `0`)
+- `--include-alt-chrom` include non-primary contigs in output (default: off)
 - `--no-bb` disable the BigBed fast path and force text lookup
 - `--data-dir` directory for reference data (default: `./data`)
 - `--outdir` output directory

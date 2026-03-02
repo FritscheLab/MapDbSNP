@@ -24,6 +24,7 @@ option_list <- list(
   make_option("--cpus", type = "integer", default = 4, help = "CPUs"),
   make_option("--chunk-size", type = "integer", default = 0, help = "Rows per chunk for BigBed streaming mode (0 = auto by input size and workers)"),
   make_option("--bb-workers", type = "integer", default = 0, help = "Parallel workers for BigBed chunk processing (0 = use --cpus)"),
+  make_option("--include-alt-chrom", action = "store_true", default = FALSE, help = "Include non-primary contigs (hap/alt/random). Default excludes them."),
   make_option("--skip", type = "integer", default = 0, help = "Skip lines"),
   make_option("--prepare-only", action = "store_true", default = FALSE, help = "Only download/prepare reference data and exit")
 )
@@ -63,6 +64,7 @@ build <- tolower(opt$build)
 version <- as.character(get_opt(opt, "dbsnp.version", "155"))
 data_dir <- get_opt(opt, "data.dir", "")
 if (!nzchar(data_dir)) data_dir <- here::here("data")
+include_alt_chrom <- isTRUE(get_opt(opt, "include.alt.chrom", FALSE))
 skip <- as.integer(get_opt(opt, "skip", 0))
 
 if (!build %in% SUPPORTED_BUILDS) stop(sprintf("Unsupported build '%s'", build))
@@ -132,6 +134,11 @@ count_file_lines <- function(path) {
   n <- suppressWarnings(as.integer(toks[1]))
   if (is.na(n)) stop(sprintf("Could not parse line count for %s", path))
   n
+}
+
+is_primary_chrom <- function(chr) {
+  x <- toupper(as.character(chr))
+  grepl("^(?:[1-9]|1[0-9]|2[0-2]|X|Y|M|MT)$", x)
 }
 
 bb_file <- ""
@@ -261,6 +268,7 @@ if (nzchar(bb_file)) {
   nomatch_parts <- character()
   total_matches <- 0L
   total_nomatch <- 0L
+  total_filtered_alt <- 0L
 
   if (total_chunks == 0L) {
     out_cols <- c(ID, "CHROM", "POS", setdiff(renamed_cols, ID))
@@ -279,6 +287,7 @@ if (nzchar(bb_file)) {
       query_ids <- unique(chunk_ids[grep("^rs", chunk_ids)])
       snppos <- data.table(CHROM = character(), POS0 = integer(), POS = integer(), ID = character())
       matched <- NULL
+      filtered_alt <- 0L
       matched_file <- file.path(work_dir, sprintf("matched_%05d.tsv", i))
       nomatch_file <- file.path(work_dir, sprintf("nomatch_%05d.tsv", i))
 
@@ -299,7 +308,14 @@ if (nzchar(bb_file)) {
 
         if (file.exists(bb_out) && file.info(bb_out)$size > 0) {
           snppos <- fread(bb_out, select = 1:4, header = FALSE, col.names = c("CHROM", "POS0", "POS", ID), showProgress = FALSE)
-          snppos[, CHROM := gsub("^chr", "", CHROM)]
+          snppos[, CHROM := gsub("^chr", "", CHROM, ignore.case = TRUE)]
+          if (!include_alt_chrom) {
+            keep_primary <- is_primary_chrom(snppos$CHROM)
+            filtered_alt <- sum(!keep_primary)
+            if (filtered_alt > 0L) snppos <- snppos[keep_primary]
+          } else {
+            filtered_alt <- 0L
+          }
         }
       }
 
@@ -324,7 +340,13 @@ if (nzchar(bb_file)) {
       nomatch_n <- nrow(misses)
       rm(chunk, chunk_ids, query_ids, snppos, matched, misses)
       gc(verbose = FALSE)
-      list(matched_file = matched_file, nomatch_file = nomatch_file, matched_n = matched_n, nomatch_n = nomatch_n)
+      list(
+        matched_file = matched_file,
+        nomatch_file = nomatch_file,
+        matched_n = matched_n,
+        nomatch_n = nomatch_n,
+        filtered_alt_n = as.integer(filtered_alt)
+      )
     }
 
     message(sprintf("Running BigBed chunk processing with %d worker(s) across %d chunk(s)", worker_count, total_chunks))
@@ -341,6 +363,7 @@ if (nzchar(bb_file)) {
     nomatch_parts <- nomatch_parts[nzchar(nomatch_parts) & file.exists(nomatch_parts) & file.info(nomatch_parts)$size > 0]
     total_matches <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "matched_n"), use.names = FALSE)))
     total_nomatch <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "nomatch_n"), use.names = FALSE)))
+    total_filtered_alt <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "filtered_alt_n"), use.names = FALSE)))
 
     if (length(matched_parts) > 0L) {
       writeLines(paste(c(ID, "CHROM", "POS", setdiff(renamed_cols, ID)), collapse = "\t"), matched_stream_file)
@@ -367,7 +390,12 @@ if (nzchar(bb_file)) {
       if (!identical(status, 0L)) stop("Failed to append no-match chunk output")
     }
   }
-  message(sprintf("BigBed chunk processing complete: matched=%s, noMatch=%s", format(total_matches, big.mark = ","), format(total_nomatch, big.mark = ",")))
+  message(sprintf(
+    "BigBed chunk processing complete: matched=%s, noMatch=%s, filtered_non_primary=%s",
+    format(total_matches, big.mark = ","),
+    format(total_nomatch, big.mark = ","),
+    format(total_filtered_alt, big.mark = ",")
+  ))
 } else {
   updated1 <- fread(cmd = awk_merge, sep = "\t", header = TRUE, showProgress = FALSE)
   temp1 <- tempfile(fileext = ".txt", tmpdir = work_dir)
@@ -395,6 +423,14 @@ if (nzchar(bb_file)) {
   snppos <- data.table(CHROM = character(), POS0 = integer(), POS = integer(), ID = character())
   if (length(outfiles) > 0) {
     snppos <- rbindlist(lapply(outfiles, fread, header = FALSE, col.names = c("CHROM", "POS0", "POS", ID)))
+    if (!include_alt_chrom && nrow(snppos) > 0L) {
+      keep_primary <- is_primary_chrom(snppos$CHROM)
+      filtered_alt <- sum(!keep_primary)
+      if (filtered_alt > 0L) {
+        snppos <- snppos[keep_primary]
+        message(sprintf("Filtered %s non-primary contig records", format(filtered_alt, big.mark = ",")))
+      }
+    }
   }
 
   # zero based start positions
