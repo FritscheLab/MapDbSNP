@@ -52,6 +52,7 @@ Install `aria2c` (optional, for faster downloads):
 Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk` scan.
 BigBed mode streams the input in chunks and auto-sizes chunk length by input rows and workers (`--chunk-size=0`, default) to reduce peak RAM on very large inputs while aiming for at least one chunk per worker when possible. Chunk processing is parallelized, defaulting to `--cpus` workers.
 By default, non-primary contigs (hap/alt/random-like chromosome names) are excluded from output.
+If an rsID maps to multiple primary positions, the first mapping (chromosome order `1-22,X,Y,MT`, then lowest position) is kept in the main output, and the remaining mappings are written to `<prefix>_multiPos_dbSNP<version>.txt`.
 
 1) Ensure `bigBedNamedItems` is available:
 - Linux/HPC (recommended with mamba):

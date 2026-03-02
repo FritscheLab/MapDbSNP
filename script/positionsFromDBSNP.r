@@ -141,6 +141,33 @@ is_primary_chrom <- function(chr) {
   grepl("^(?:[1-9]|1[0-9]|2[0-2]|X|Y|M|MT)$", x)
 }
 
+chrom_rank <- function(chr) {
+  x <- toupper(as.character(chr))
+  rank <- rep.int(999999L, length(x))
+  n <- suppressWarnings(as.integer(x))
+  is_auto <- !is.na(n) & n >= 1L & n <= 22L
+  rank[is_auto] <- n[is_auto]
+  rank[x == "X"] <- 23L
+  rank[x == "Y"] <- 24L
+  rank[x %in% c("M", "MT")] <- 25L
+  rank
+}
+
+split_multi_position_ids <- function(snppos, id_col) {
+  if (nrow(snppos) == 0L) {
+    return(list(primary = snppos, duplicates = snppos))
+  }
+
+  dt <- copy(snppos)
+  dt[, CHROM_RANK := chrom_rank(CHROM)]
+  setorderv(dt, c(id_col, "CHROM_RANK", "CHROM", "POS", "POS0"))
+  is_dup <- duplicated(dt[[id_col]])
+  dup_cols <- c(id_col, "CHROM", "POS0", "POS")
+  duplicates <- dt[is_dup, ..dup_cols]
+  primary <- dt[!is_dup][, CHROM_RANK := NULL]
+  list(primary = primary, duplicates = duplicates)
+}
+
 bb_file <- ""
 no_bb <- isTRUE(get_opt(opt, "no.bb", FALSE))
 if (!no_bb) {
@@ -209,6 +236,7 @@ on.exit(unlink(work_dir, recursive = TRUE, force = TRUE), add = TRUE)
 
 output_main <- file.path(outdir, sprintf("%s_dbSNP%s_%s.txt", prefix, version, build))
 output_nomatch <- file.path(outdir, sprintf("%s_noMatch_dbSNP%s.txt", prefix, version))
+output_multipos <- file.path(outdir, sprintf("%s_multiPos_dbSNP%s.txt", prefix, version))
 
 if (nzchar(bb_file)) {
   message(sprintf("Extracting positions from BigBed: %s", bb_file))
@@ -266,9 +294,11 @@ if (nzchar(bb_file)) {
   total_chunks <- length(chunk_files)
   worker_count <- if (total_chunks > 0L) max(1L, min(total_chunks, desired_workers)) else 0L
   nomatch_parts <- character()
+  multipos_parts <- character()
   total_matches <- 0L
   total_nomatch <- 0L
   total_filtered_alt <- 0L
+  total_multi_pos <- 0L
 
   if (total_chunks == 0L) {
     out_cols <- c(ID, "CHROM", "POS", setdiff(renamed_cols, ID))
@@ -279,7 +309,15 @@ if (nzchar(bb_file)) {
       data.table::setDTthreads(1L)
       chunk <- fread(chunk_files[[i]], header = FALSE, col.names = input_cols, showProgress = FALSE)
       if (nrow(chunk) == 0L) {
-        return(list(matched_file = "", nomatch_file = "", matched_n = 0L, nomatch_n = 0L))
+        return(list(
+          matched_file = "",
+          nomatch_file = "",
+          multipos_file = "",
+          matched_n = 0L,
+          nomatch_n = 0L,
+          filtered_alt_n = 0L,
+          multi_pos_n = 0L
+        ))
       }
 
       setnames(chunk, c("CHROM", "POS0", "POS"), c("CHROM_old", "POS0_old", "POS_old"), skip_absent = TRUE)
@@ -288,8 +326,10 @@ if (nzchar(bb_file)) {
       snppos <- data.table(CHROM = character(), POS0 = integer(), POS = integer(), ID = character())
       matched <- NULL
       filtered_alt <- 0L
+      multi_pos <- data.table()
       matched_file <- file.path(work_dir, sprintf("matched_%05d.tsv", i))
       nomatch_file <- file.path(work_dir, sprintf("nomatch_%05d.tsv", i))
+      multipos_file <- file.path(work_dir, sprintf("multipos_%05d.tsv", i))
 
       if (length(query_ids) > 0L) {
         ids_file <- file.path(work_dir, sprintf("ids_%05d.txt", i))
@@ -315,6 +355,14 @@ if (nzchar(bb_file)) {
             if (filtered_alt > 0L) snppos <- snppos[keep_primary]
           } else {
             filtered_alt <- 0L
+          }
+          if (nrow(snppos) > 0L) {
+            split_pos <- split_multi_position_ids(snppos, ID)
+            snppos <- split_pos$primary
+            multi_pos <- split_pos$duplicates
+            if (nrow(multi_pos) > 0L) {
+              fwrite(multi_pos, multipos_file, sep = "\t", quote = FALSE, col.names = FALSE)
+            }
           }
         }
       }
@@ -343,9 +391,11 @@ if (nzchar(bb_file)) {
       list(
         matched_file = matched_file,
         nomatch_file = nomatch_file,
+        multipos_file = multipos_file,
         matched_n = matched_n,
         nomatch_n = nomatch_n,
-        filtered_alt_n = as.integer(filtered_alt)
+        filtered_alt_n = as.integer(filtered_alt),
+        multi_pos_n = as.integer(nrow(multi_pos))
       )
     }
 
@@ -361,9 +411,12 @@ if (nzchar(bb_file)) {
     matched_parts <- matched_parts[nzchar(matched_parts) & file.exists(matched_parts) & file.info(matched_parts)$size > 0]
     nomatch_parts <- unlist(lapply(chunk_results, `[[`, "nomatch_file"), use.names = FALSE)
     nomatch_parts <- nomatch_parts[nzchar(nomatch_parts) & file.exists(nomatch_parts) & file.info(nomatch_parts)$size > 0]
+    multipos_parts <- unlist(lapply(chunk_results, `[[`, "multipos_file"), use.names = FALSE)
+    multipos_parts <- multipos_parts[nzchar(multipos_parts) & file.exists(multipos_parts) & file.info(multipos_parts)$size > 0]
     total_matches <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "matched_n"), use.names = FALSE)))
     total_nomatch <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "nomatch_n"), use.names = FALSE)))
     total_filtered_alt <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "filtered_alt_n"), use.names = FALSE)))
+    total_multi_pos <- sum(as.integer(unlist(lapply(chunk_results, `[[`, "multi_pos_n"), use.names = FALSE)))
 
     if (length(matched_parts) > 0L) {
       writeLines(paste(c(ID, "CHROM", "POS", setdiff(renamed_cols, ID)), collapse = "\t"), matched_stream_file)
@@ -390,11 +443,29 @@ if (nzchar(bb_file)) {
       if (!identical(status, 0L)) stop("Failed to append no-match chunk output")
     }
   }
+  if (length(multipos_parts) > 0L) {
+    multipos_concat <- file.path(work_dir, "multipos_concat.tsv")
+    for (part in multipos_parts) {
+      status <- system(sprintf("cat %s >> %s", shQuote(part), shQuote(multipos_concat)))
+      if (!identical(status, 0L)) stop("Failed to append multi-position chunk output")
+    }
+    multipos_sorted <- file.path(work_dir, "multipos_sorted.tsv")
+    status <- system(sprintf(
+      "LC_ALL=C sort -t$'\\t' -k1,1 -k2,2 -k3,3n -k4,4n -u %s > %s",
+      shQuote(multipos_concat),
+      shQuote(multipos_sorted)
+    ))
+    if (!identical(status, 0L)) stop("Failed to sort/deduplicate multi-position output")
+    writeLines(paste(c(ID, "CHROM", "POS0", "POS"), collapse = "\t"), output_multipos)
+    status <- system(sprintf("cat %s >> %s", shQuote(multipos_sorted), shQuote(output_multipos)))
+    if (!identical(status, 0L)) stop("Failed to write multi-position output")
+  }
   message(sprintf(
-    "BigBed chunk processing complete: matched=%s, noMatch=%s, filtered_non_primary=%s",
+    "BigBed chunk processing complete: matched=%s, noMatch=%s, filtered_non_primary=%s, multi_position=%s",
     format(total_matches, big.mark = ","),
     format(total_nomatch, big.mark = ","),
-    format(total_filtered_alt, big.mark = ",")
+    format(total_filtered_alt, big.mark = ","),
+    format(total_multi_pos, big.mark = ",")
   ))
 } else {
   updated1 <- fread(cmd = awk_merge, sep = "\t", header = TRUE, showProgress = FALSE)
@@ -429,6 +500,13 @@ if (nzchar(bb_file)) {
       if (filtered_alt > 0L) {
         snppos <- snppos[keep_primary]
         message(sprintf("Filtered %s non-primary contig records", format(filtered_alt, big.mark = ",")))
+      }
+    }
+    if (nrow(snppos) > 0L) {
+      split_pos <- split_multi_position_ids(snppos, ID)
+      snppos <- split_pos$primary
+      if (nrow(split_pos$duplicates) > 0L) {
+        fwrite(unique(split_pos$duplicates), output_multipos, sep = "\t", quote = FALSE)
       }
     }
   }
