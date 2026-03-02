@@ -22,7 +22,7 @@ option_list <- list(
   make_option("--outdir", type = "character", default = "", help = "Output directory"),
   make_option("--prefix", type = "character", default = "", help = "Prefix for output file name without path"),
   make_option("--cpus", type = "integer", default = 4, help = "CPUs"),
-  make_option("--chunk-size", type = "integer", default = 1000000, help = "Rows per chunk for BigBed streaming mode (default: 1,000,000)"),
+  make_option("--chunk-size", type = "integer", default = 0, help = "Rows per chunk for BigBed streaming mode (0 = auto by input size and workers)"),
   make_option("--bb-workers", type = "integer", default = 0, help = "Parallel workers for BigBed chunk processing (0 = use --cpus)"),
   make_option("--skip", type = "integer", default = 0, help = "Skip lines"),
   make_option("--prepare-only", action = "store_true", default = FALSE, help = "Only download/prepare reference data and exit")
@@ -67,7 +67,7 @@ skip <- as.integer(get_opt(opt, "skip", 0))
 
 if (!build %in% SUPPORTED_BUILDS) stop(sprintf("Unsupported build '%s'", build))
 if (!version %in% SUPPORTED_DBSNP_VERSIONS) stop(sprintf("Unsupported dbSNP version '%s'", version))
-if (is.na(chunk_size) || chunk_size < 1L) stop("--chunk-size must be >= 1")
+if (is.na(chunk_size) || chunk_size < 0L) stop("--chunk-size must be >= 0")
 if (is.na(bb_workers) || bb_workers < 0L) stop("--bb-workers must be >= 0")
 if (bb_workers == 0L) bb_workers <- max(1L, as.integer(cpus))
 
@@ -123,6 +123,15 @@ sort_output_by_coords <- function(infile, outfile, work_dir) {
     status <- system(sprintf("cat %s >> %s", shQuote(sorted_body), shQuote(outfile)))
     if (!identical(status, 0L)) stop("Writing sorted mapped output failed")
   }
+}
+
+count_file_lines <- function(path) {
+  out <- system2("wc", args = c("-l", path), stdout = TRUE, stderr = TRUE)
+  if (length(out) < 1L) stop(sprintf("Failed to count lines for %s", path))
+  toks <- strsplit(trimws(out[1]), "\\s+")[[1]]
+  n <- suppressWarnings(as.integer(toks[1]))
+  if (is.na(n)) stop(sprintf("Could not parse line count for %s", path))
+  n
 }
 
 bb_file <- ""
@@ -191,7 +200,7 @@ output_main <- file.path(outdir, sprintf("%s_dbSNP%s_%s.txt", prefix, version, b
 output_nomatch <- file.path(outdir, sprintf("%s_noMatch_dbSNP%s.txt", prefix, version))
 
 if (nzchar(bb_file)) {
-  message(sprintf("Extracting positions from BigBed in chunks of %s rows: %s", format(chunk_size, big.mark = ","), bb_file))
+  message(sprintf("Extracting positions from BigBed: %s", bb_file))
   updated_file <- file.path(work_dir, "updated_input.tsv")
   status <- system(sprintf("%s > %s", awk_merge, shQuote(updated_file)))
   if (!identical(status, 0L)) stop("Failed to update rsIDs before BigBed lookup")
@@ -200,11 +209,28 @@ if (nzchar(bb_file)) {
   if (!ID %in% input_cols) stop(sprintf("Column '%s' not found after rsID update", ID))
   renamed_cols <- renamed_input_colnames(input_cols)
 
+  total_data_rows <- max(0L, count_file_lines(updated_file) - 1L)
+  desired_workers <- max(1L, bb_workers)
+  if (.Platform$OS.type == "windows" && desired_workers > 1L) desired_workers <- 1L
+  effective_chunk_size <- as.integer(chunk_size)
+  if (effective_chunk_size == 0L) {
+    target_chunks <- max(1L, desired_workers * 4L)
+    auto_size <- if (total_data_rows > 0L) ceiling(total_data_rows / target_chunks) else 1L
+    # Keep chunk sizes in a practical range for memory/perf balance.
+    effective_chunk_size <- as.integer(max(100000L, min(1000000L, auto_size)))
+  }
+  message(sprintf(
+    "BigBed chunk settings: rows=%s workers=%d chunk_size=%s",
+    format(total_data_rows, big.mark = ","),
+    desired_workers,
+    format(effective_chunk_size, big.mark = ",")
+  ))
+
   split_prefix <- file.path(work_dir, "updated_chunk_")
   split_cmd <- sprintf(
     "tail -n +2 %s | split --suffix-length=5 --numeric-suffixes --lines=%s - %s",
     shQuote(updated_file),
-    chunk_size,
+    effective_chunk_size,
     shQuote(split_prefix)
   )
   status <- system(split_cmd)
@@ -214,8 +240,7 @@ if (nzchar(bb_file)) {
   bb_tool <- find_bigbed_tool()
   matched_stream_file <- file.path(work_dir, "matched_unsorted.tsv")
   total_chunks <- length(chunk_files)
-  worker_count <- if (total_chunks > 0L) max(1L, min(total_chunks, bb_workers)) else 0L
-  if (.Platform$OS.type == "windows" && worker_count > 1L) worker_count <- 1L
+  worker_count <- if (total_chunks > 0L) max(1L, min(total_chunks, desired_workers)) else 0L
   nomatch_parts <- character()
   total_matches <- 0L
   total_nomatch <- 0L
