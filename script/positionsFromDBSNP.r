@@ -95,7 +95,34 @@ renamed_input_colnames <- function(cols) {
   out
 }
 
+format_seconds <- function(seconds) {
+  sec <- max(0, as.numeric(seconds))
+  hh <- floor(sec / 3600)
+  mm <- floor((sec %% 3600) / 60)
+  ss <- floor(sec %% 60)
+  sprintf("%02d:%02d:%02d", hh, mm, ss)
+}
+
+progress_line <- function(done, total, start_time, label = "BigBed progress") {
+  elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+  pct <- if (total > 0L) 100 * done / total else 100
+  rate <- if (elapsed > 0) done / elapsed else 0
+  remaining <- if (rate > 0) (total - done) / rate else NA_real_
+  eta_txt <- if (is.na(remaining) || !is.finite(remaining)) "--:--:--" else format_seconds(remaining)
+  sprintf(
+    "%s: %s/%s chunks (%.1f%%) elapsed=%s ETA=%s",
+    label,
+    format(done, big.mark = ","),
+    format(total, big.mark = ","),
+    pct,
+    format_seconds(elapsed),
+    eta_txt
+  )
+}
+
 sort_output_by_coords <- function(infile, outfile, work_dir) {
+  t0 <- Sys.time()
+  message("Sorting final mapped output by CHROM/POS...")
   hdr <- names(fread(infile, nrows = 0, showProgress = FALSE))
   chrom_col <- match("CHROM", hdr)
   pos_col <- match("POS", hdr)
@@ -125,6 +152,8 @@ sort_output_by_coords <- function(infile, outfile, work_dir) {
     status <- system(sprintf("cat %s >> %s", shQuote(sorted_body), shQuote(outfile)))
     if (!identical(status, 0L)) stop("Writing sorted mapped output failed")
   }
+  elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+  message(sprintf("Finished sorting mapped output in %s", format_seconds(elapsed)))
 }
 
 count_file_lines <- function(path) {
@@ -241,13 +270,17 @@ output_multipos <- file.path(outdir, sprintf("%s_multiPos_dbSNP%s.txt", prefix, 
 if (nzchar(bb_file)) {
   message(sprintf("Extracting positions from BigBed: %s", bb_file))
   updated_file <- file.path(work_dir, "updated_input.tsv")
+  message("Preparing rsID-updated temporary input...")
+  t_update <- Sys.time()
   status <- system(sprintf("%s > %s", awk_merge, shQuote(updated_file)))
   if (!identical(status, 0L)) stop("Failed to update rsIDs before BigBed lookup")
+  message(sprintf("Finished rsID update in %s", format_seconds(as.numeric(difftime(Sys.time(), t_update, units = "secs")))))
 
   input_cols <- names(fread(updated_file, nrows = 0, showProgress = FALSE))
   if (!ID %in% input_cols) stop(sprintf("Column '%s' not found after rsID update", ID))
   renamed_cols <- renamed_input_colnames(input_cols)
 
+  message("Counting rows for chunk planning...")
   total_data_rows <- max(0L, count_file_lines(updated_file) - 1L)
   desired_workers <- max(1L, bb_workers)
   if (.Platform$OS.type == "windows" && desired_workers > 1L) desired_workers <- 1L
@@ -279,6 +312,8 @@ if (nzchar(bb_file)) {
   ))
 
   split_prefix <- file.path(work_dir, "updated_chunk_")
+  message("Splitting input into chunks...")
+  t_split <- Sys.time()
   split_cmd <- sprintf(
     "tail -n +2 %s | split --suffix-length=5 --numeric-suffixes --lines=%s - %s",
     shQuote(updated_file),
@@ -288,6 +323,11 @@ if (nzchar(bb_file)) {
   status <- system(split_cmd)
   if (!identical(status, 0L)) stop("Splitting updated input into chunks failed")
   chunk_files <- sort(list.files(work_dir, pattern = "^updated_chunk_[0-9]+$", full.names = TRUE))
+  message(sprintf(
+    "Created %s chunk(s) in %s",
+    format(length(chunk_files), big.mark = ","),
+    format_seconds(as.numeric(difftime(Sys.time(), t_split, units = "secs")))
+  ))
 
   bb_tool <- find_bigbed_tool()
   matched_stream_file <- file.path(work_dir, "matched_unsorted.tsv")
@@ -401,10 +441,26 @@ if (nzchar(bb_file)) {
 
     message(sprintf("Running BigBed chunk processing with %d worker(s) across %d chunk(s)", worker_count, total_chunks))
     idx <- seq_along(chunk_files)
-    chunk_results <- if (worker_count == 1L) {
-      lapply(idx, process_chunk)
+    chunk_results <- vector("list", total_chunks)
+    t_chunks <- Sys.time()
+    done_chunks <- 0L
+
+    if (worker_count == 1L) {
+      for (i in idx) {
+        chunk_results[[i]] <- process_chunk(i)
+        done_chunks <- done_chunks + 1L
+        message(progress_line(done_chunks, total_chunks, t_chunks))
+      }
     } else {
-      parallel::mclapply(idx, process_chunk, mc.cores = worker_count, mc.preschedule = FALSE)
+      batches <- split(idx, ceiling(seq_along(idx) / worker_count))
+      for (batch_idx in batches) {
+        batch_res <- parallel::mclapply(batch_idx, process_chunk, mc.cores = length(batch_idx), mc.preschedule = FALSE)
+        for (k in seq_along(batch_idx)) {
+          chunk_results[[batch_idx[[k]]]] <- batch_res[[k]]
+        }
+        done_chunks <- done_chunks + length(batch_idx)
+        message(progress_line(done_chunks, total_chunks, t_chunks))
+      }
     }
 
     matched_parts <- unlist(lapply(chunk_results, `[[`, "matched_file"), use.names = FALSE)
