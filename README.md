@@ -50,6 +50,7 @@ Install `aria2c` (optional, for faster downloads):
 ## BigBed fast path (recommended)
 
 Using the UCSC BigBed file skips the 90–100 GB text download and parallel `awk` scan.
+BigBed mode now streams the input in chunks (default: `--chunk-size=1000000`) to reduce peak RAM on very large inputs.
 
 1) Ensure `bigBedNamedItems` is available:
 - Linux/HPC (recommended with mamba):
@@ -97,6 +98,7 @@ Rscript ./script/positionsFromDBSNP.r \
   --ID=ID \
   --build=hg38 \
   --dbsnp-version=155 \
+  --chunk-size=1000000 \
   --bb-file=./data/dbSnp155_hg38.bb \
   --outdir=./example \
   --prefix=example_bb \
@@ -137,6 +139,7 @@ Key options:
 - `--build` genome build: `hg19` or `hg38`
 - `--dbsnp-version` dbSNP release to use (`151`, `153`, or `155`; default: `155`)
 - `--bb-file` path to dbSNP BigBed file (if set, text-based lookup is skipped; defaults to a downloaded `./data/dbSnp<version>_<build>.bb` when available)
+- `--chunk-size` rows per chunk for BigBed streaming mode (default: `1000000`; lower values reduce RAM at the cost of runtime)
 - `--no-bb` disable the BigBed fast path and force text lookup
 - `--data-dir` directory for reference data (default: `./data`)
 - `--outdir` output directory
