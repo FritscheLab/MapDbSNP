@@ -378,7 +378,7 @@ if (nzchar(bb_file)) {
       }
 
       setnames(chunk, c("CHROM", "POS0", "POS"), c("CHROM_old", "POS0_old", "POS_old"), skip_absent = TRUE)
-      chunk[, (ID) := normalize_rs_ids(get(ID))]
+      set(chunk, j = ID, value = normalize_rs_ids(chunk[[ID]]))
       chunk_ids <- as.character(chunk[[ID]])
       valid_ids <- is_valid_rs_id(chunk_ids)
       invalid_n <- sum(!is.na(chunk_ids) & !valid_ids)
@@ -587,7 +587,7 @@ if (nzchar(bb_file)) {
   ))
 } else {
   updated1 <- fread(cmd = awk_merge, sep = "\t", header = TRUE, showProgress = FALSE)
-  updated1[, (ID) := normalize_rs_ids(get(ID))]
+  set(updated1, j = ID, value = normalize_rs_ids(updated1[[ID]]))
   temp1 <- tempfile(fileext = ".txt", tmpdir = work_dir)
   valid_input_ids <- is_valid_rs_id(updated1[[ID]])
   invalid_input_n <- sum(!is.na(updated1[[ID]]) & !valid_input_ids)
